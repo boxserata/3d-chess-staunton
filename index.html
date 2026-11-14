@@ -4,31 +4,16 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>3D Staunton Chess</title>
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #0d1117; color: #f0f6fc; font-family: system-ui, -apple-system, sans-serif; overflow: hidden; }
-  #hud {
-    position: fixed; top: 14px; left: 14px; z-index: 10;
-    background: rgba(13, 17, 23, 0.85); border: 1px solid #d4af37;
-    border-radius: 12px; padding: 12px 16px; backdrop-filter: blur(8px);
-    display: flex; flex-direction: column; gap: 8px; min-width: 220px;
-  }
-  h1 { font-size: 16px; color: #d4af37; letter-spacing: 0.5px; }
-  #status { font-size: 13px; color: #e6edf3; }
-  .controls { display: flex; gap: 6px; flex-wrap: wrap; }
-  button {
-    background: #1f2937; color: #f9fafb; border: 1px solid #d4af37;
-    border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer;
-  }
-  button:hover { background: #d4af37; color: #0d1117; }
-</style>
+<link rel="stylesheet" href="styles.css" />
 </head>
 <body>
 <div id="hud">
   <h1>3D Staunton Chess</h1>
   <div id="status">Turn: White | Mode: vs AI</div>
+  <div id="history">Moves: —</div>
   <div class="controls">
     <button id="modeBtn">Mode: vs AI</button>
+    <button id="undoBtn">Undo</button>
     <button id="flipBtn">Flip Board</button>
     <button id="resetBtn">New Game</button>
   </div>
@@ -36,6 +21,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+<script src="ai.js"></script>
 <script>
 const chess = new Chess();
 let vsAI = true, selectedSq = null, legalMoves = [], aiThinking = false;
@@ -65,15 +51,11 @@ dirLight.castShadow = true;
 dirLight.shadow.mapSize.set(2048, 2048);
 scene.add(dirLight);
 
-const boardGroup = new THREE.Group();
-const piecesGroup = new THREE.Group();
-const indicatorsGroup = new THREE.Group();
+const boardGroup = new THREE.Group(), piecesGroup = new THREE.Group(), indicatorsGroup = new THREE.Group();
 scene.add(boardGroup, piecesGroup, indicatorsGroup);
 
-const frameMat = new THREE.MeshStandardMaterial({ color: 0x2b1d12, roughness: 0.4, metalness: 0.2 });
-const frame = new THREE.Mesh(new THREE.BoxGeometry(8.8, 0.4, 8.8), frameMat);
-frame.position.y = -0.22;
-frame.receiveShadow = true;
+const frame = new THREE.Mesh(new THREE.BoxGeometry(8.8, 0.4, 8.8), new THREE.MeshStandardMaterial({ color: 0x2b1d12, roughness: 0.4, metalness: 0.2 }));
+frame.position.y = -0.22; frame.receiveShadow = true;
 boardGroup.add(frame);
 
 const goldLineMat = new THREE.LineBasicMaterial({ color: 0xd4af37 });
@@ -81,12 +63,8 @@ const squareMeshes = {};
 for (let r = 0; r < 8; r++) {
   for (let c = 0; c < 8; c++) {
     const isLight = (r + c) % 2 === 0;
-    const mat = new THREE.MeshStandardMaterial({
-      color: isLight ? 0xe8dcc4 : 0x2a1f18, roughness: 0.35, metalness: 0.1
-    });
-    const sqMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 0.12, 1), mat);
-    const x = c - 3.5, z = r - 3.5;
-    sqMesh.position.set(x, -0.06, z);
+    const sqMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 0.12, 1), new THREE.MeshStandardMaterial({ color: isLight ? 0xe8dcc4 : 0x2a1f18, roughness: 0.35, metalness: 0.1 }));
+    sqMesh.position.set(c - 3.5, -0.06, r - 3.5);
     sqMesh.receiveShadow = true;
     const sqName = files[c] + (8 - r);
     sqMesh.userData = { sq: sqName, baseColor: isLight ? 0xe8dcc4 : 0x2a1f18 };
@@ -95,73 +73,54 @@ for (let r = 0; r < 8; r++) {
   }
 }
 for (let i = -4; i <= 4; i++) {
-  const hGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-4, 0.005, i), new THREE.Vector3(4, 0.005, i)]);
-  const vGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(i, 0.005, -4), new THREE.Vector3(i, 0.005, 4)]);
-  boardGroup.add(new THREE.Line(hGeo, goldLineMat), new THREE.Line(vGeo, goldLineMat));
+  boardGroup.add(
+    new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-4, 0.005, i), new THREE.Vector3(4, 0.005, i)]), goldLineMat),
+    new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(i, 0.005, -4), new THREE.Vector3(i, 0.005, 4)]), goldLineMat)
+  );
 }
 
-function lathe(pts) {
-  return new THREE.LatheGeometry(pts.map(p => new THREE.Vector2(p[0], p[1])), 24);
-}
+const lathe = pts => new THREE.LatheGeometry(pts.map(p => new THREE.Vector2(p[0], p[1])), 24);
 function createPieceMesh(type, color) {
   const g = new THREE.Group();
-  const mat = new THREE.MeshStandardMaterial({
-    color: color === 'w' ? 0xf5efe0 : 0x1e1e24,
-    roughness: 0.25, metalness: color === 'w' ? 0.08 : 0.25
-  });
+  const mat = new THREE.MeshStandardMaterial({ color: color === 'w' ? 0xf5efe0 : 0x1e1e24, roughness: 0.25, metalness: color === 'w' ? 0.08 : 0.25 });
   const basePts = [[0,0],[0.36,0],[0.36,0.08],[0.28,0.14],[0.22,0.2]];
   let body;
-  if (type === 'p') {
-    body = new THREE.Mesh(lathe([...basePts,[0.14,0.45],[0.2,0.52],[0.15,0.68],[0,0.74]]), mat);
-  } else if (type === 'r') {
-    body = new THREE.Mesh(lathe([...basePts,[0.2,0.68],[0.27,0.74],[0.27,0.9],[0.18,0.9],[0.18,0.84],[0,0.84]]), mat);
-  } else if (type === 'n') {
+  if (type === 'p') body = new THREE.Mesh(lathe([...basePts,[0.14,0.45],[0.2,0.52],[0.15,0.68],[0,0.74]]), mat);
+  else if (type === 'r') body = new THREE.Mesh(lathe([...basePts,[0.2,0.68],[0.27,0.74],[0.27,0.9],[0.18,0.9],[0.18,0.84],[0,0.84]]), mat);
+  else if (type === 'n') {
     body = new THREE.Mesh(lathe(basePts), mat);
-    const neck = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.52, 0.34), mat);
-    neck.position.set(0, 0.48, 0.04); neck.rotation.x = -0.2;
-    const head = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.22, 0.42), mat);
-    head.position.set(0, 0.74, 0.14); head.rotation.x = 0.25;
+    const neck = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.52, 0.34), mat); neck.position.set(0, 0.48, 0.04); neck.rotation.x = -0.2;
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.22, 0.42), mat); head.position.set(0, 0.74, 0.14); head.rotation.x = 0.25;
     g.add(neck, head);
-  } else if (type === 'b') {
-    body = new THREE.Mesh(lathe([...basePts,[0.15,0.65],[0.22,0.78],[0.14,0.98],[0.06,1.06],[0,1.1]]), mat);
-  } else if (type === 'q') {
-    body = new THREE.Mesh(lathe([...basePts,[0.17,0.75],[0.26,0.92],[0.22,1.12],[0.1,1.18],[0,1.24]]), mat);
-  } else {
+  } else if (type === 'b') body = new THREE.Mesh(lathe([...basePts,[0.15,0.65],[0.22,0.78],[0.14,0.98],[0.06,1.06],[0,1.1]]), mat);
+  else if (type === 'q') body = new THREE.Mesh(lathe([...basePts,[0.17,0.75],[0.26,0.92],[0.22,1.12],[0.1,1.18],[0,1.24]]), mat);
+  else {
     body = new THREE.Mesh(lathe([...basePts,[0.19,0.82],[0.28,1.02],[0.22,1.18],[0,1.22]]), mat);
-    const crossV = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.24, 0.07), mat);
-    crossV.position.y = 1.32;
-    const crossH = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.07, 0.07), mat);
-    crossH.position.y = 1.35;
-    g.add(crossV, crossH);
+    const cv = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.24, 0.07), mat); cv.position.y = 1.32;
+    const ch = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.07, 0.07), mat); ch.position.y = 1.35;
+    g.add(cv, ch);
   }
-  body.castShadow = true;
   g.add(body);
   g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
   return g;
 }
 
-function sqToPos(sq) {
-  const c = files.indexOf(sq[0]);
-  const r = 8 - parseInt(sq[1], 10);
-  return { x: c - 3.5, z: r - 3.5 };
-}
+const sqToPos = sq => ({ x: files.indexOf(sq[0]) - 3.5, z: (8 - parseInt(sq[1], 10)) - 3.5 });
 
 function syncBoard() {
-  piecesGroup.clear();
-  indicatorsGroup.clear();
+  piecesGroup.clear(); indicatorsGroup.clear();
   Object.values(squareMeshes).forEach(m => m.material.color.setHex(m.userData.baseColor));
   const b = chess.board();
   for (let r = 0; r < 8; r++) {
     for (let c = 0; c < 8; c++) {
       const p = b[r][c];
-      if (p) {
-        const mesh = createPieceMesh(p.type, p.color);
-        const sq = files[c] + (8 - r);
-        const pos = sqToPos(sq);
-        mesh.position.set(pos.x, 0, pos.z);
-        mesh.userData = { sq };
-        piecesGroup.add(mesh);
-      }
+      if (!p) continue;
+      const mesh = createPieceMesh(p.type, p.color);
+      const sq = files[c] + (8 - r);
+      const pos = sqToPos(sq);
+      mesh.position.set(pos.x, 0, pos.z);
+      mesh.userData = { sq };
+      piecesGroup.add(mesh);
     }
   }
   if (selectedSq && squareMeshes[selectedSq]) {
@@ -169,56 +128,40 @@ function syncBoard() {
     legalMoves.forEach(m => {
       const pos = sqToPos(m.to);
       const isCap = m.flags.includes('c') || m.flags.includes('e');
-      const ring = new THREE.Mesh(
-        new THREE.RingGeometry(0.18, 0.34, 24),
-        new THREE.MeshBasicMaterial({ color: isCap ? 0xef4444 : 0x22c55e, side: THREE.DoubleSide })
-      );
-      ring.rotation.x = -Math.PI / 2;
-      ring.position.set(pos.x, 0.02, pos.z);
+      const ring = new THREE.Mesh(new THREE.RingGeometry(0.18, 0.34, 24), new THREE.MeshBasicMaterial({ color: isCap ? 0xef4444 : 0x22c55e, side: THREE.DoubleSide }));
+      ring.rotation.x = -Math.PI / 2; ring.position.set(pos.x, 0.02, pos.z);
       indicatorsGroup.add(ring);
     });
   }
-  updateStatus();
-}
-
-function updateStatus() {
   const turn = chess.turn() === 'w' ? 'White' : 'Black';
   let state = `Turn: ${turn} | Mode: ${vsAI ? 'vs AI' : '2 Players'}`;
   if (chess.in_checkmate()) state = `Checkmate! ${chess.turn() === 'w' ? 'Black' : 'White'} wins`;
   else if (chess.in_draw()) state = 'Draw!';
   else if (chess.in_check()) state += ' (CHECK)';
   document.getElementById('status').textContent = state;
+  const hist = chess.history();
+  document.getElementById('history').textContent = hist.length ? 'Moves: ' + hist.join(' ') : 'Moves: —';
 }
 
 function makeAIMove() {
   if (chess.game_over() || !vsAI || chess.turn() !== 'b') return;
   aiThinking = true;
   setTimeout(() => {
-    const moves = chess.moves({ verbose: true });
-    const vals = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
-    let best = moves[Math.floor(Math.random() * moves.length)], bestScore = -999;
-    for (const m of moves) {
-      let score = m.captured ? vals[m.captured] * 10 : 0;
-      chess.move(m);
-      if (chess.in_checkmate()) score += 999;
-      else if (chess.in_check()) score += 2;
-      chess.undo();
-      score += Math.random() * 0.5;
-      if (score > bestScore) { bestScore = score; best = m; }
+    const move = window.chooseBestMove(chess, 2);
+    if (move) {
+      const res = chess.move(move);
+      window.playChessSound(Boolean(res && res.captured));
     }
-    chess.move(best);
     aiThinking = false;
     syncBoard();
-  }, 300);
+  }, 260);
 }
 
-const raycaster = new THREE.Raycaster();
-const pointer = new THREE.Vector2();
+const raycaster = new THREE.Raycaster(), pointer = new THREE.Vector2();
 let downPos = null;
 renderer.domElement.addEventListener('pointerdown', e => { downPos = { x: e.clientX, y: e.clientY }; });
 renderer.domElement.addEventListener('pointerup', e => {
-  if (!downPos || Math.hypot(e.clientX - downPos.x, e.clientY - downPos.y) > 8) return;
-  if (aiThinking || chess.game_over()) return;
+  if (!downPos || Math.hypot(e.clientX - downPos.x, e.clientY - downPos.y) > 8 || aiThinking || chess.game_over()) return;
   pointer.x = (e.clientX / innerWidth) * 2 - 1;
   pointer.y = -(e.clientY / innerHeight) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
@@ -231,35 +174,24 @@ renderer.domElement.addEventListener('pointerup', e => {
   if (selectedSq) {
     const move = legalMoves.find(m => m.to === sq);
     if (move) {
-      chess.move({ from: selectedSq, to: sq, promotion: 'q' });
+      const res = chess.move({ from: selectedSq, to: sq, promotion: 'q' });
+      window.playChessSound(Boolean(res && res.captured));
       selectedSq = null; legalMoves = [];
-      syncBoard();
-      makeAIMove();
-      return;
+      syncBoard(); makeAIMove(); return;
     }
   }
   const piece = chess.get(sq);
   if (piece && piece.color === chess.turn() && (!vsAI || piece.color === 'w')) {
-    selectedSq = sq;
-    legalMoves = chess.moves({ square: sq, verbose: true });
-  } else {
-    selectedSq = null; legalMoves = [];
-  }
+    selectedSq = sq; legalMoves = chess.moves({ square: sq, verbose: true });
+  } else { selectedSq = null; legalMoves = []; }
   syncBoard();
 });
 
-document.getElementById('modeBtn').onclick = () => {
-  vsAI = !vsAI;
-  document.getElementById('modeBtn').textContent = `Mode: ${vsAI ? 'vs AI' : '2 Players'}`;
-  updateStatus();
-};
+document.getElementById('modeBtn').onclick = () => { vsAI = !vsAI; document.getElementById('modeBtn').textContent = `Mode: ${vsAI ? 'vs AI' : '2 Players'}`; syncBoard(); };
+document.getElementById('undoBtn').onclick = () => { if (aiThinking) return; chess.undo(); if (vsAI && chess.turn() === 'b') chess.undo(); selectedSq = null; legalMoves = []; syncBoard(); };
 document.getElementById('flipBtn').onclick = () => { camera.position.z *= -1; controls.update(); };
 document.getElementById('resetBtn').onclick = () => { chess.reset(); selectedSq = null; legalMoves = []; syncBoard(); };
-window.addEventListener('resize', () => {
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-});
+window.addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
 
 syncBoard();
 (function animate() { requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); })();
